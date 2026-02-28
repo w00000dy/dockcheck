@@ -673,7 +673,10 @@ if [[ -n "${GotUpdates:-}" ]]; then
         # cd to the compose-file directory to account for people who use relative volumes
         cd "$ContPath" || { printf "\n%bPath error - skipping%b %s" "$c_red" "$c_reset" "$i"; continue; }
         # Reformatting path + multi compose
-        if [[ $ContConfigFile == '/'* ]]; then
+        if [[ "$ContConfigFile" == /data/compose/* && "$ContPath" == /var/lib/docker/volumes/portainer_data/_data/compose/* ]]; then
+          # Portainer path rewrite is active, use ContPath combined with basename of ContConfigFile
+          CompleteConfs=$(for conf in ${ContConfigFile//,/ }; do printf -- "-f %s/%s " "$ContPath" "$(basename "$conf")"; done)
+        elif [[ $ContConfigFile == '/'* ]]; then
           CompleteConfs=$(for conf in ${ContConfigFile//,/ }; do printf -- "-f %s " "$conf"; done)
         else
           CompleteConfs=$(for conf in ${ContConfigFile//,/ }; do printf -- "-f %s/%s " "$ContPath" "$conf"; done)
