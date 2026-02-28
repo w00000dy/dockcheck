@@ -639,6 +639,12 @@ if [[ -n "${GotUpdates:-}" ]]; then
         ContLabels=$($jqbin -r '."Config"."Labels"' <<< "$ContConfig")
         ContPath=$($jqbin -r '."com.docker.compose.project.working_dir"' <<< "$ContLabels")
         [[ "$ContPath" == "null" ]] && ContPath=""
+        
+        # Check and remap Portainer compose paths to the actual host directory
+        if [[ "$ContPath" == /data/compose/* && ! -d "$ContPath" ]]; then
+          ContPath="/var/lib/docker/volumes/portainer_data/_data/compose/${ContPath#/data/compose/}"
+        fi
+        
         ContProject=$($jqbin -r '."com.docker.compose.project"' <<< "$ContLabels")
         [[ "$ContProject" == "null" ]] && ContProject=""
         ContConfigFile=$($jqbin -r '."com.docker.compose.project.config_files"' <<< "$ContLabels")
