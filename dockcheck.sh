@@ -639,6 +639,8 @@ if [[ -n "${GotUpdates:-}" ]]; then
         ContLabels=$($jqbin -r '."Config"."Labels"' <<< "$ContConfig")
         ContPath=$($jqbin -r '."com.docker.compose.project.working_dir"' <<< "$ContLabels")
         [[ "$ContPath" == "null" ]] && ContPath=""
+        ContProject=$($jqbin -r '."com.docker.compose.project"' <<< "$ContLabels")
+        [[ "$ContProject" == "null" ]] && ContProject=""
         ContConfigFile=$($jqbin -r '."com.docker.compose.project.config_files"' <<< "$ContLabels")
         [[ "$ContConfigFile" == "null" ]] && ContConfigFile=""
         ContName=$($jqbin -r '."com.docker.compose.service"' <<< "$ContLabels")
@@ -673,14 +675,17 @@ if [[ -n "${GotUpdates:-}" ]]; then
         # Check if the container got an environment file set and reformat it
         ContEnvs=""
         if [[ -n "$ContEnv" ]]; then ContEnvs=$(for env in ${ContEnv//,/ }; do printf -- "--env-file %s " "$env"; done); fi
+        # Check if project name is set to avoid conflict like with portainer
+        ContProj=""
+        if [[ -n "$ContProject" ]]; then ContProj="-p $ContProject "; fi
         # Set variable when compose up should only target the specific container, not the stack
         if [[ $OnlySpecific == true ]] || [[ $ContOnlySpecific == true ]]; then SpecificContainer="$ContName"; fi
 
         # Check if the whole stack should be restarted
         if [[ "$ContRestartStack" == true ]] || [[ "$ForceRestartStacks" == true ]]; then
-          ${DockerBin} ${CompleteConfs} stop; ${DockerBin} ${CompleteConfs} ${ContEnvs} up -d || { printf "\n%bDocker error, exiting!%b\n" "$c_red" "$c_reset" ; exit 1; }
+          ${DockerBin} ${ContProj}${CompleteConfs} stop; ${DockerBin} ${ContProj}${CompleteConfs} ${ContEnvs} up -d || { printf "\n%bDocker error, exiting!%b\n" "$c_red" "$c_reset" ; exit 1; }
         else
-          ${DockerBin} ${CompleteConfs} ${ContEnvs} up -d ${SpecificContainer} || { printf "\n%bDocker error, exiting!%b\n" "$c_red" "$c_reset" ; exit 1; }
+          ${DockerBin} ${ContProj}${CompleteConfs} ${ContEnvs} up -d ${SpecificContainer} || { printf "\n%bDocker error, exiting!%b\n" "$c_red" "$c_reset" ; exit 1; }
         fi
       done
     fi
