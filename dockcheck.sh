@@ -639,12 +639,40 @@ if [[ -n "${GotUpdates:-}" ]]; then
         ContLabels=$($jqbin -r '."Config"."Labels"' <<< "$ContConfig")
         ContPath=$($jqbin -r '."com.docker.compose.project.working_dir"' <<< "$ContLabels")
         [[ "$ContPath" == "null" ]] && ContPath=""
-        
-        # Check and remap Portainer compose paths to the actual host directory
-        if [[ "$ContPath" == /data/compose/* && ! -d "$ContPath" ]]; then
-          ContPath="/var/lib/docker/volumes/portainer_data/_data/compose/${ContPath#/data/compose/}"
-        fi
-        
+        # Check and remap virtual compose paths (like from Portainer/Dockge) to the actual host directory
+        if [[ -n "$ContPath" && ! -d "$ContPath" ]]; then
+          # If path doesn't exist on host, it might be a virtual path from a management container
+          MappedPath=""
+          ManagerContainer=""
+          
+          # Inspect ALL running containers' mounts to find which one maps a volume that could contain ContPath
+          while IFS=$'\t' read -r mName mMounts; do
+            [[ -z "$mName" || -z "$mMounts" ]] && continue
+            
+            # Mounts format from jq is typically "Source:Destination Source:Destination"
+            for mount in $mMounts; do
+               Source="${mount%%:*}"
+               Dest="${mount#*:}"
+               
+               # If ContPath starts with this mount's Destination, this is likely our Manager
+               if [[ "$ContPath" == "$Dest"* ]]; then
+                 MappedPath="${Source}${ContPath#"$Dest"}"
+                 ManagerContainer="$mName"
+                 break 2 # Break out of both loops
+               fi
+            done
+          done < <(docker ps -a --format '{{.Names}}' | xargs -I {} docker inspect {} --format '{{.Name}}{{range .Mounts}}	{{.Source}}:{{.Destination}}{{end}}' | sed 's/^\///')
+          
+
+          if [[ -n "$MappedPath" && -d "$MappedPath" ]]; then
+             ContPath="$MappedPath"
+             # Store ManagerMounts for the ConfigFiles check later
+             ManagerMounts=$(docker inspect "$ManagerContainer" --format '{{range .Mounts}}{{.Source}}:{{.Destination}}{{"\n"}}{{end}}')
+          else
+             printf "\n%bError: Path '%s' not found on host and no manager container detected for %s!%b\n" "$c_red" "$ContPath" "$i" "$c_reset"
+             continue
+          fi
+        fi        
         ContProject=$($jqbin -r '."com.docker.compose.project"' <<< "$ContLabels")
         [[ "$ContProject" == "null" ]] && ContProject=""
         ContConfigFile=$($jqbin -r '."com.docker.compose.project.config_files"' <<< "$ContLabels")
@@ -672,15 +700,39 @@ if [[ -n "${GotUpdates:-}" ]]; then
 
         # cd to the compose-file directory to account for people who use relative volumes
         cd "$ContPath" || { printf "\n%bPath error - skipping%b %s" "$c_red" "$c_reset" "$i"; continue; }
+        
+        # Check if project name is set to avoid conflict like with portainer
+        ContProj=""
+        if [[ -n "$ContProject" ]]; then ContProj="-p $ContProject "; fi
+        
         # Reformatting path + multi compose
-        if [[ "$ContConfigFile" == /data/compose/* && "$ContPath" == /var/lib/docker/volumes/portainer_data/_data/compose/* ]]; then
-          # Portainer path rewrite is active, use ContPath combined with basename of ContConfigFile
-          CompleteConfs=$(for conf in ${ContConfigFile//,/ }; do printf -- "-f %s/%s " "$ContPath" "$(basename "$conf")"; done)
-        elif [[ $ContConfigFile == '/'* ]]; then
-          CompleteConfs=$(for conf in ${ContConfigFile//,/ }; do printf -- "-f %s " "$conf"; done)
-        else
-          CompleteConfs=$(for conf in ${ContConfigFile//,/ }; do printf -- "-f %s/%s " "$ContPath" "$conf"; done)
-        fi
+        # If the file path is absolute, it might be a virtual path from the container. Attempt to remap it exactly like ContPath.
+        MappedConfigFiles=""
+        for conf in ${ContConfigFile//,/ }; do
+           if [[ "$conf" == /* && ! -f "$conf" && -n "$ManagerContainer" ]]; then
+               MappedConfPath=""
+               while IFS= read -r mount; do
+                 [[ -z "$mount" ]] && continue
+                 Source="${mount%%:*}"
+                 Dest="${mount#*:}"
+                 if [[ "$conf" == "$Dest"* ]]; then
+                   MappedConfPath="${Source}${conf#"$Dest"}"
+                   break
+                 fi
+               done <<< "$ManagerMounts"
+               
+               if [[ -n "$MappedConfPath" ]]; then
+                 MappedConfigFiles="${MappedConfigFiles}-f $MappedConfPath "
+               else
+                 MappedConfigFiles="${MappedConfigFiles}-f $conf " # Fallback
+               fi
+           elif [[ "$conf" == /* ]]; then
+               MappedConfigFiles="${MappedConfigFiles}-f $conf "
+           else
+               MappedConfigFiles="${MappedConfigFiles}-f $ContPath/$conf "
+           fi
+        done
+        CompleteConfs="$MappedConfigFiles"
         # Check if the container got an environment file set and reformat it
         ContEnvs=""
         if [[ -n "$ContEnv" ]]; then ContEnvs=$(for env in ${ContEnv//,/ }; do printf -- "--env-file %s " "$env"; done); fi
