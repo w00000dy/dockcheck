@@ -229,7 +229,7 @@ self_update() {
 
 choosecontainers() {
   while [[ -z "${ChoiceClean:-}" ]]; do
-    read -r -p "Enter number(s) separated by comma, [a] for all - [q] to quit: " Choice
+    read -r -p "Enter number(s) or range(s) separated by comma (e.g. 1-2,4-5,09), [a] for all - [q] to quit: " Choice
     if [[ "$Choice" =~ [qQnN] ]]; then
       [[ -n "${BackupForDays:-}" ]] && remove_backups
       exit 0
@@ -238,12 +238,28 @@ choosecontainers() {
       ChoiceClean=${Choice//[,.:;]/ }
     else
       ChoiceClean=${Choice//[,.:;]/ }
+      SelectedUpdates=()
       for CC in $ChoiceClean; do
-        CC=$((10#$CC)) # Base 10 interpretation to strip leading zeroes
-        if [[ "$CC" -lt 1 || "$CC" -gt $UpdCount ]]; then # Reset choice if out of bounds
-          echo "Number not in list: $CC"; unset ChoiceClean; break 1
+        if [[ "$CC" == *-* ]]; then
+          if [[ "$CC" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+            # Enforce base 10 to avoid octal parsing of leading zeroes
+            RangeStart=$((10#${BASH_REMATCH[1]}))
+            RangeEnd=$((10#${BASH_REMATCH[2]}))
+            if [[ "$RangeStart" -lt 1 || "$RangeEnd" -gt $UpdCount || "$RangeStart" -gt "$RangeEnd" ]]; then
+              echo "Entered list is out of bounds: $CC"; unset ChoiceClean; break 1
+            else
+              for ((idx=RangeStart; idx<=RangeEnd; idx++)); do SelectedUpdates+=( "${GotUpdates[$idx-1]}" ); done
+            fi
+          else
+            echo "Invalid range: $CC"; unset ChoiceClean; break 1
+          fi
         else
-          SelectedUpdates+=( "${GotUpdates[$CC-1]}" )
+          CC=$((10#$CC)) # Base 10 interpretation to strip leading zeroes
+          if [[ "$CC" -lt 1 || "$CC" -gt $UpdCount ]]; then # Reset choice if out of bounds
+            echo "Number not in list: $CC"; unset ChoiceClean; break 1
+          else
+            SelectedUpdates+=( "${GotUpdates[$CC-1]}" )
+          fi
         fi
       done
     fi
@@ -380,7 +396,7 @@ dependency_check() {
           binary_downloader "$AppName" "$AppUrl"
           [[ -f "$ScriptWorkDir/$AppName" ]] && { export "$AppVar"="$ScriptWorkDir/$1" && printf "\n%b%s downloaded.%b\n" "$c_green" "$AppName" "$c_reset"; }
       fi
-    else printf "\n%bDependency missing, exiting.%b\n" "$c_red" "$c_reset"; exit 1;
+    else printf "\n%bDependency '%s' missing, exiting.%b\n" "$c_red" "$AppName" "$c_reset"; exit 1;
     fi
   fi
   # Final check if binary is correct
@@ -684,7 +700,7 @@ if [[ -n "${GotUpdates:-}" ]]; then
         ContRestartStack=$($jqbin -r '."mag37.dockcheck.restart-stack"' <<< "$ContLabels")
         [[ "$ContRestartStack" == "null" ]] && ContRestartStack=""
         ContOnlySpecific=$($jqbin -r '."mag37.dockcheck.only-specific-container"' <<< "$ContLabels")
-        [[ "$ContOnlySpecific" == "null" ]] && ContRestartStack=""
+        [[ "$ContOnlySpecific" == "null" ]] && ContOnlySpecific=""
         ContStateRunning=$($jqbin -r '."State"."Running"' <<< "$ContConfig")
         [[ "$ContStateRunning" == "null" ]] && ContStateRunning=""
 
@@ -744,7 +760,7 @@ if [[ -n "${GotUpdates:-}" ]]; then
 
         # Check if the whole stack should be restarted
         if [[ "$ContRestartStack" == true ]] || [[ "$ForceRestartStacks" == true ]]; then
-          ${DockerBin} ${ContProj}${CompleteConfs} stop; ${DockerBin} ${ContProj}${CompleteConfs} ${ContEnvs} up -d || { printf "\n%bDocker error, exiting!%b\n" "$c_red" "$c_reset" ; exit 1; }
+          ${DockerBin} ${ContProj}${CompleteConfs} down; ${DockerBin} ${ContProj}${CompleteConfs} ${ContEnvs} up -d || { printf "\n%bDocker error, exiting!%b\n" "$c_red" "$c_reset" ; exit 1; }
         else
           ${DockerBin} ${ContProj}${CompleteConfs} ${ContEnvs} up -d ${SpecificContainer} || { printf "\n%bDocker error, exiting!%b\n" "$c_red" "$c_reset" ; exit 1; }
         fi
@@ -755,7 +771,7 @@ if [[ -n "${GotUpdates:-}" ]]; then
     # Trigger pruning only when backup-function is not used
     if [[ -z "${BackupForDays:-}" ]]; then
       if [[ "$AutoPrune" == false ]] && [[ "$AutoMode" == false ]]; then printf "\n"; read -rep "Would you like to prune all dangling images? y/[n]: " AutoPrune; fi
-      if [[ "$AutoPrune" == true ]] || [[ "$AutoPrune" =~ [yY] ]]; then printf "\nAuto pruning.."; docker image prune -f; fi
+      if [[ "$AutoPrune" == true ]] || [[ "$AutoPrune" =~ [yY] ]]; then printf "\nAuto pruning.."; docker image prune -f && AlreadyPruned="true" ; fi
     fi
 
   else
@@ -765,7 +781,11 @@ else
   printf "\nNo updates available.\n"
 fi
 
-# Clean up old backup image tags if -b is used
-[[ -n "${BackupForDays:-}" ]] && remove_backups
+# Clean up old backup image tags if -b is used otherwise prune if auto-prune is set
+if [[ -n "${BackupForDays:-}" ]]; then
+  remove_backups
+else
+  if [[ "$AutoPrune" == true ]] && [[ "${AlreadyPruned:=false}" != true ]]; then printf "\nAuto pruning.."; docker image prune -f; fi
+fi
 
 exit 0
